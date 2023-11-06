@@ -2,6 +2,7 @@
 
 import numpy as np
 import geometry as geo
+from geometry.utils import vec_dot
 from optimization.constraint import Constraint
 
 class Torsal(Constraint):
@@ -24,15 +25,13 @@ class Torsal(Constraint):
         self.fvij = None # List of the edge vectors per each face
         self.v = None # List of the vertices per each face
         self.vc= None # List og the barycenters of the faces
-        self.var_idx = None # Dic to store the index of the variables
-        self.const_idx = None # Dic to store the index of the constraints
         self.t1norms = None # List of the norms of torsal directions
         self.t2norms = None # List of the norms of torsal directions
         self.tt1norms = None # List of the norms of torsal directions second envelope
         self.tt2norms = None # List of the norms of torsal directions second envelope
 
     
-    def initialize_constraint(self, X, V, F, bf, ncf, w=1 ) -> np.array:
+    def initialize_constraint(self, X, var_indices, V, F, bf, ncf) -> np.array:
         # Input
         # X: variables [ e   | a | b | n_t  | d_i ] 
         # X  size      [ 3*V | F | F | 3*F  | F   ]
@@ -40,11 +39,7 @@ class Torsal(Constraint):
         # F: Faces
         # bf: circumcenters of the faces
         # ncf: normals of the circumcenters
-        # w: weight
-
-        # Set weight
-        self.w = w
-
+    
         # Set circumcenters
         self.bf = bf
 
@@ -61,16 +56,8 @@ class Torsal(Constraint):
         self.const = 8*self.nF
 
         # Define indices indices
-        self.var_idx = {    "e"  : np.arange( 0                     , 3*self.nV), 
-                            "a1" : np.arange( 3*self.nV             , 3*self.nV + self.nF),
-                            "b1" : np.arange( 3*self.nV + self.nF   , 3*self.nV + 2*self.nF),
-                            "nt1": np.arange( 3*self.nV + 2*self.nF , 3*self.nV + 5*self.nF),
-                            "a2" : np.arange( 3*self.nV + 5*self.nF , 3*self.nV + 6*self.nF),
-                            "b2" : np.arange( 3*self.nV + 6*self.nF , 3*self.nV + 7*self.nF),
-                            "nt2": np.arange( 3*self.nV + 7*self.nF , 3*self.nV + 10*self.nF),
-                            "df" : np.arange( 3*self.nV + 10*self.nF, 3*self.nV + 11*self.nF),
-                    }
-        
+        self.var_idx = var_indices
+    
         self.const_idx = {  "nt1.ec"  : np.arange( 0                  , self.nF),
                             "nt1.t1"  : np.arange( self.nF            , 2*self.nF),
                             "nt1.tt1" : np.arange( 2*self.nF          , 3*self.nF),
@@ -78,8 +65,8 @@ class Torsal(Constraint):
                             "nt2.ec"  : np.arange( 4*self.nF          , 5*self.nF),
                             "nt2.t2"  : np.arange( 5*self.nF          , 6*self.nF),
                             "nt2.tt2" : np.arange( 6*self.nF          , 7*self.nF),
-                            "nt2.nt2" : np.arange( 7*self.nF          , 8*self.nF),
-                    }
+                            "nt2.nt2" : np.arange( 7*self.nF          , 8*self.nF)
+                        }
         
         # Number of variables
         self.var = len(X)
@@ -139,24 +126,53 @@ class Torsal(Constraint):
         self.tt1norms = np.linalg.norm(tt1, axis=1)
         self.tt2norms = np.linalg.norm(tt2, axis=1)
 
-        return X
-
     def compute(self, X, F) -> None:
+        """ Compute the residual and the Jacobian of the constraint
+            Input:
+                X: Variables
+                F: Faces
+        """
+        e, a1, b1, nt1, a2, b2, nt2, df = self.uncurry_X(X, "e", "a1", "b1", "nt1", "a2", "b2", "nt2", "df")
 
-        # Init J
-        J = np.zeros((self.const, self.var), dtype=np.float64)
+        e   = e.reshape(-1, 3)
+        nt1 = nt1.reshape(-1, 3)
+        nt2 = nt2.reshape(-1, 3)
 
-        # Init r
-        r = np.zeros(self.const, dtype=np.float64)
+        # Get vertices of second envelope
+        vvi, vvj, vvk, dcvi, dcvj, dcvk = self.compute_second_env(df, e, F)
 
-        J, r = self.fill_J(X, J, r, F)
+        # Compute ec
+        ec = self.compute_ec(df, e, F)
 
-        # Update J
-        self.J =  J
-        # Update r
-        self.r =  r
+        # Get vij, vik
+        vij = self.fvij[:,0]
+        vik = self.fvij[:,1]
 
-    def fill_J_t(self, J, r, e, ec, a1, b1, nt1, vij, vik, vvi, vvj, vvk, dcvi, dcvj, dcvk, F, torsal=1):
+        # Init indices for sparse J matrix
+        self.fill_J_t(e, ec, a1, b1, nt1, vij, vik, vvi, vvj, vvk, dcvi, dcvj, dcvk, F, 1)
+        self.fill_J_t(e, ec, a2, b2, nt2, vij, vik, vvi, vvj, vvk, dcvi, dcvj, dcvk, F, 2) 
+        
+        
+
+    def fill_J_t(self, e, ec, a1, b1, nt1, vij, vik, vvi, vvj, vvk, dcvi, dcvj, dcvk, F, torsal=1):
+        """  Function to fill the Jacobian of the constraint per each torsal plane
+        Input:
+            e: directions
+            ec: direction of the line congruence at the barycenter of the face.
+            a1: a1 variable of t1 = a1 vij + b1 vik
+            b1: b1 variable of t1 = a1 vij + b1 vik
+            nt1: normal of the torsal plane
+            vij: edge vector
+            vik: edge vector
+            vvi: vertices of the second envelope
+            vvj: vertices of the second envelope
+            vvk: vertices of the second envelope
+            dcvi: distance from vi to center of sphere
+            dcvj: distance from vj to center of sphere
+            dcvk: distance from vk to center of sphere
+            F: Faces
+            torsal: torsal plane index
+        """
 
         if torsal == 1:
             nt_ec = "nt1.ec"
@@ -179,7 +195,6 @@ class Torsal(Constraint):
             tnorms = self.t2norms
             ttnorms = self.tt2norms
 
-
         # Compute derivatives of de (nt.ec)
         deix, deiy, deiz, dejx, dejy, dejz, dekx, deky, dekz = self.compute_decnt(dcvi, dcvj, dcvk, e, nt1, F)
         # Compute derivatives of d df (nt.ec)
@@ -197,74 +212,113 @@ class Torsal(Constraint):
 
         # Fill J for || nt.ec ||^2
         # Set derivatives de (nt.ec)
-        J[c_idx[nt_ec], 3*F[:,0] ]   = 2/3*deix
-        J[c_idx[nt_ec], 3*F[:,0]+1 ] = 2/3*deiy
-        J[c_idx[nt_ec], 3*F[:,0]+2 ] = 2/3*deiz
-        J[c_idx[nt_ec], 3*F[:,1] ]   = 2/3*dejx
-        J[c_idx[nt_ec], 3*F[:,1]+1 ] = 2/3*dejy
-        J[c_idx[nt_ec], 3*F[:,1]+2 ] = 2/3*dejz
-        J[c_idx[nt_ec], 3*F[:,2] ]   = 2/3*dekx
-        J[c_idx[nt_ec], 3*F[:,2]+1 ] = 2/3*deky
-        J[c_idx[nt_ec], 3*F[:,2]+2 ] = 2/3*dekz
+        # J[c_idx[nt_ec], 3*F[:,0] ]   = 2/3*deix
+        # J[c_idx[nt_ec], 3*F[:,0]+1 ] = 2/3*deiy
+        # J[c_idx[nt_ec], 3*F[:,0]+2 ] = 2/3*deiz
+        # J[c_idx[nt_ec], 3*F[:,1] ]   = 2/3*dejx
+        # J[c_idx[nt_ec], 3*F[:,1]+1 ] = 2/3*dejy
+        # J[c_idx[nt_ec], 3*F[:,1]+2 ] = 2/3*dejz
+        # J[c_idx[nt_ec], 3*F[:,2] ]   = 2/3*dekx
+        # J[c_idx[nt_ec], 3*F[:,2]+1 ] = 2/3*deky
+        # J[c_idx[nt_ec], 3*F[:,2]+2 ] = 2/3*dekz
+        self.add_derivatives(c_idx[nt_ec], 3*F[:,0], 2/3*deix)
+        self.add_derivatives(c_idx[nt_ec], 3*F[:,0]+1, 2/3*deiy)
+        self.add_derivatives(c_idx[nt_ec], 3*F[:,0]+2, 2/3*deiz)
+
+        self.add_derivatives(c_idx[nt_ec], 3*F[:,1], 2/3*dejx)
+        self.add_derivatives(c_idx[nt_ec], 3*F[:,1]+1, 2/3*dejy)
+        self.add_derivatives(c_idx[nt_ec], 3*F[:,1]+2, 2/3*dejz)
+
+        self.add_derivatives(c_idx[nt_ec], 3*F[:,2], 2/3*dekx)
+        self.add_derivatives(c_idx[nt_ec], 3*F[:,2]+1, 2/3*deky)
+        self.add_derivatives(c_idx[nt_ec], 3*F[:,2]+2, 2/3*dekz)    
 
 
         # Set derivateives dnt (nt.ec)
-        J[c_idx[nt_ec].repeat(3), v_idx[nt] ] = ec.flatten()
+        #J[c_idx[nt_ec].repeat(3), v_idx[nt] ] = ec.flatten()
+        self.add_derivatives(c_idx[nt_ec].repeat(3), v_idx[nt], ec.flatten())
         
         # Set derivatives d(df) (nt.ec)
-        J[c_idx[nt_ec], v_idx["df"]] = d_df
+        #J[c_idx[nt_ec], v_idx["df"]] = d_df
+        self.add_derivatives(c_idx[nt_ec], v_idx["df"], d_df)
 
         # Set r
-        r[c_idx[nt_ec]] = np.sum(nt1*ec, axis=1)
+        # r[c_idx[nt_ec]] = np.sum(nt1*ec, axis=1)
+        self.set_r(c_idx[nt_ec], np.sum(nt1*ec, axis=1))
+
         
         # Fill J for || nt.t ||^2; t = a vij + b vik
         tnor = t/tnorms[:, None]
+        
         # Set derivatives dnt (nt.t)
-        J[c_idx[nt_t].repeat(3), v_idx[nt]    ] = tnor.flatten()
+        # J[c_idx[nt_t].repeat(3), v_idx[nt]    ] = tnor.flatten()
+        self.add_derivatives(c_idx[nt_t].repeat(3), v_idx[nt], tnor.flatten())
         
         # Set derivatives da (nt.t)
-        J[c_idx[nt_t], v_idx[va]] = self.vec_dot(vij, nt1)/tnorms 
+        # J[c_idx[nt_t], v_idx[va]] = vec_dot(vij, nt1)/tnorms 
+        self.add_derivatives(c_idx[nt_t], v_idx[va], vec_dot(vij, nt1)/tnorms)
+
         # Set derivatives db (nt.t)
-        J[c_idx[nt_t], v_idx[vb]] = self.vec_dot(vik, nt1)/tnorms
+        #J[c_idx[nt_t], v_idx[vb]] = vec_dot(vik, nt1)/tnorms
+        self.add_derivatives(c_idx[nt_t], v_idx[vb], vec_dot(vik, nt1)/tnorms)
 
         # Set r 
-        r[c_idx[nt_t]] = np.sum(tnor*nt1, axis=1)
+        #self.r[c_idx[nt_t]] = np.sum(tnor*nt1, axis=1)
+        self.set_r(c_idx[nt_t], np.sum(tnor*nt1, axis=1))
 
         # Fill J for || nt.tt ||^2; tt = a vvij + b vvik      
         ttnor = tt/ttnorms[:, None]
+
         # Set derivatives dnt (nt.tt)
-        J[c_idx[nt_tt].repeat(3), v_idx[nt]   ] = ttnor.flatten()
+        # J[c_idx[nt_tt].repeat(3), v_idx[nt]   ] = ttnor.flatten()
+        self.add_derivatives(c_idx[nt_tt].repeat(3), v_idx[nt], ttnor.flatten())
 
         # Set derivatives da (nt1.tt1)
-        J[c_idx[nt_tt], v_idx[va]] = self.vec_dot(vvij, nt1)/ttnorms
+        # J[c_idx[nt_tt], v_idx[va]] = vec_dot(vvij, nt1)/ttnorms
+        self.add_derivatives(c_idx[nt_tt], v_idx[va], vec_dot(vvij, nt1)/ttnorms)
+
         # Set derivatives db (nt1.tt1)
-        J[c_idx[nt_tt], v_idx[vb]] = self.vec_dot(vvik, nt1)/ttnorms
+        # J[c_idx[nt_tt], v_idx[vb]] = vec_dot(vvik, nt1)/ttnorms
+        self.add_derivatives(c_idx[nt_tt], v_idx[vb], vec_dot(vvik, nt1)/ttnorms)
 
         # Set derivatives d e (nt.tt)
-        J[c_idx[nt_tt], 3*F[:,0] ]   = -2*(a1+b1)*deix/ttnorms
-        J[c_idx[nt_tt], 3*F[:,0]+1 ] = -2*(a1+b1)*deiy/ttnorms
-        J[c_idx[nt_tt], 3*F[:,0]+2 ] = -2*(a1+b1)*deiz/ttnorms
+        #J[c_idx[nt_tt], 3*F[:,0] ]   = -2*(a1+b1)*deix/ttnorms
+        #J[c_idx[nt_tt], 3*F[:,0]+1 ] = -2*(a1+b1)*deiy/ttnorms
+        #J[c_idx[nt_tt], 3*F[:,0]+2 ] = -2*(a1+b1)*deiz/ttnorms
+        self.add_derivatives(c_idx[nt_tt],   3*F[:,0], -2*(a1+b1)*deix/ttnorms)
+        self.add_derivatives(c_idx[nt_tt], 3*F[:,0]+1, -2*(a1+b1)*deiy/ttnorms)
+        self.add_derivatives(c_idx[nt_tt], 3*F[:,0]+2, -2*(a1+b1)*deiz/ttnorms)
 
-        J[c_idx[nt_tt], 3*F[:,1] ]   = 2*a1*dejx/ttnorms
-        J[c_idx[nt_tt], 3*F[:,1]+1 ] = 2*a1*dejy/ttnorms
-        J[c_idx[nt_tt], 3*F[:,1]+2 ] = 2*a1*dejz/ttnorms
+        #J[c_idx[nt_tt], 3*F[:,1] ]   = 2*a1*dejx/ttnorms
+        #J[c_idx[nt_tt], 3*F[:,1]+1 ] = 2*a1*dejy/ttnorms
+        #J[c_idx[nt_tt], 3*F[:,1]+2 ] = 2*a1*dejz/ttnorms
+        self.add_derivatives(c_idx[nt_tt],   3*F[:,1], 2*a1*dejx/ttnorms)
+        self.add_derivatives(c_idx[nt_tt], 3*F[:,1]+1, 2*a1*dejy/ttnorms)
+        self.add_derivatives(c_idx[nt_tt], 3*F[:,1]+2, 2*a1*dejz/ttnorms)
 
-        J[c_idx[nt_tt], 3*F[:,2] ]   = 2*b1*dekx/ttnorms
-        J[c_idx[nt_tt], 3*F[:,2]+1 ] = 2*b1*deky/ttnorms
-        J[c_idx[nt_tt], 3*F[:,2]+2 ] = 2*b1*dekz/ttnorms
+        #J[c_idx[nt_tt], 3*F[:,2] ]   = 2*b1*dekx/ttnorms
+        #J[c_idx[nt_tt], 3*F[:,2]+1 ] = 2*b1*deky/ttnorms
+        #J[c_idx[nt_tt], 3*F[:,2]+2 ] = 2*b1*dekz/ttnorms
+        self.add_derivatives(c_idx[nt_tt],   3*F[:,2], 2*b1*dekx/ttnorms)
+        self.add_derivatives(c_idx[nt_tt], 3*F[:,2]+1, 2*b1*deky/ttnorms)
+        self.add_derivatives(c_idx[nt_tt], 3*F[:,2]+2, 2*b1*dekz/ttnorms)
 
         # Set derivatives d df (nt.tt)
-        J[c_idx[nt_tt], v_idx["df"]] = self.vec_dot((2*a1[:,None]*(ejcf_ej - eicf_ei) + 2*b1[:,None]*(ekcf_ek - eicf_ei)), nt1)/ttnorms
+        # J[c_idx[nt_tt], v_idx["df"]] = vec_dot((2*a1[:,None]*(ejcf_ej - eicf_ei) + 2*b1[:,None]*(ekcf_ek - eicf_ei)), nt1)/ttnorms
+        self.add_derivatives(c_idx[nt_tt], v_idx["df"], vec_dot((2*a1[:,None]*(ejcf_ej - eicf_ei) + 2*b1[:,None]*(ekcf_ek - eicf_ei)), nt1)/ttnorms)
         
         # Set r
-        r[c_idx[nt_tt]] = np.sum(ttnor*nt1, axis=1)
+        # r[c_idx[nt_tt]] = np.sum(ttnor*nt1, axis=1)
+        self.set_r(c_idx[nt_tt], np.sum(ttnor*nt1, axis=1))
 
 
         # Fill J for || nt.nt - 1 ||^2
-        J[c_idx[nt_nt].repeat(3), v_idx[nt]] = nt1.flatten()
+        # J[c_idx[nt_nt].repeat(3), v_idx[nt]] = nt1.flatten()
+        self.add_derivatives(c_idx[nt_nt].repeat(3), v_idx[nt], nt1.flatten())
 
         # Set r
-        r[c_idx[nt_nt]] = np.sum(nt1*nt1, axis=1) - 1
+        # r[c_idx[nt_nt]] = np.sum(nt1*nt1, axis=1) - 1
+        self.set_r(c_idx[nt_nt], np.sum(nt1*nt1, axis=1) - 1)
 
    
         if torsal == 1:
@@ -274,34 +328,6 @@ class Torsal(Constraint):
             self.t2norms = np.linalg.norm(t, axis=1)
             self.tt2norms = np.linalg.norm(tt, axis=1)
 
-
-        return J, r 
-
-
-    def fill_J(self, X, J, r, F):
-
-        
-        e, a1, b1, nt1, a2, b2, nt2, df = self.uncurry_variables(X)
-
-        # Get vertices of second envelope
-        vvi, vvj, vvk, dcvi, dcvj, dcvk = self.compute_second_env(df, e, F)
-
-        # Compute ec
-        ec = self.compute_ec(df, e, F)
-
-        # Get vij, vik
-        vij = self.fvij[:,0]
-        vik = self.fvij[:,1]
-
-        J, r = self.fill_J_t(J, r, e, ec, a1, b1, nt1, vij, vik, vvi, vvj, vvk, dcvi, dcvj, dcvk, F, 1)
-        J, r = self.fill_J_t(J, r, e, ec, a2, b2, nt2, vij, vik, vvi, vvj, vvk, dcvi, dcvj, dcvk, F, 2)
-
-        return J, r
-
-
-
-
-            
 
 
     def compute_second_env(self, df, ei, F):
@@ -328,7 +354,6 @@ class Torsal(Constraint):
 
         ei /= np.linalg.norm(ei, axis=1)[:, None]
 
-
         # compute the second envelope as vi + (dcv.ei) ei 
         vvi = 2*np.sum(dcvi*ei[F[:,0]], axis=1)[:, None] * ei[F[:,0]] + vi
         vvj = 2*np.sum(dcvj*ei[F[:,1]], axis=1)[:, None] * ei[F[:,1]] + vj
@@ -347,6 +372,15 @@ class Torsal(Constraint):
         return self.bf + df[:, None] * self.ncf
     
     def compute_ec(self, df, e_i, F):
+        """ Compute the direction of the line congruence at the barycenters
+        Input:
+            df  .- Distance to center
+            e_i .- Directions of the vertices
+            F   .- Faces
+        Output:
+            ec  .- Direction of the line congruence at the barycenters
+        """
+
 
         # Get first envelope
         vc = self.vc
@@ -357,46 +391,13 @@ class Torsal(Constraint):
         # Compute varycenter in second envelope
         vvc = (vvi + vvj + vvk)/3
 
+        # Compute ec diferece between first and second envelope
         ec = vvc - vc
 
         if len(ec.shape) == 1:
             ec = np.array([ec])
 
         return ec
-
-    def uncurry_variables(self, X):
-
-        v_idx = self.var_idx
-
-
-        # Get e_i directions
-        e = X[v_idx["e"]].reshape(-1, 3)
-
-        # Get a 
-        a1 = X[v_idx["a1"]]
-
-        # Get b
-        b1 = X[v_idx["b1"]]
-
-        # Get n_t
-        nt1 = X[v_idx["nt1"]].reshape(-1, 3)
-
-        # Get a2
-        a2 = X[v_idx["a2"]]
-
-        # Get b2
-        b2 = X[v_idx["b2"]]
-
-        # Get n_t2
-        nt2 = X[v_idx["nt2"]].reshape(-1, 3)
-
-        # Get d_i
-        di = X[v_idx["df"]]
-
-        return e, a1, b1, nt1, a2, b2, nt2, di
-    
-    def vec_dot(self, a, b):
-        return np.sum(a*b, axis=1)
     
     def compute_decnt(self, dcvi, dcvj, dcvk, e, nt, F):
         """ Function to compute the derivative of nt.ec with respect to e_i
@@ -409,17 +410,16 @@ class Torsal(Constraint):
         ej = e[F[:,1]]
         ek = e[F[:,2]]  
 
-   
-
-        deix = self.vec_dot( ( dcvi[:,0][:, None]*ei +  self.vec_dot(ei, dcvi)[:, None]*np.array([1,0,0]) ), nt)
-        deiy = self.vec_dot( ( dcvi[:,1][:, None]*ei +  self.vec_dot(ei, dcvi)[:, None]*np.array([0,1,0]) ), nt)
-        deiz = self.vec_dot( ( dcvi[:,2][:, None]*ei +  self.vec_dot(ei, dcvi)[:, None]*np.array([0,0,1]) ), nt)
-        dejx = self.vec_dot( ( dcvj[:,0][:, None]*ej +  self.vec_dot(ej, dcvj)[:, None]*np.array([1,0,0]) ), nt)
-        dejy = self.vec_dot( ( dcvj[:,1][:, None]*ej +  self.vec_dot(ej, dcvj)[:, None]*np.array([0,1,0]) ), nt)
-        dejz = self.vec_dot( ( dcvj[:,2][:, None]*ej +  self.vec_dot(ej, dcvj)[:, None]*np.array([0,0,1]) ), nt)
-        dekx = self.vec_dot( ( dcvk[:,0][:, None]*ek +  self.vec_dot(ek, dcvk)[:, None]*np.array([1,0,0]) ), nt)
-        deky = self.vec_dot( ( dcvk[:,1][:, None]*ek +  self.vec_dot(ek, dcvk)[:, None]*np.array([0,1,0]) ), nt)
-        dekz = self.vec_dot( ( dcvk[:,2][:, None]*ek +  self.vec_dot(ek, dcvk)[:, None]*np.array([0,0,1]) ), nt)
+        # Compute derivatives of de (nt.ec)
+        deix = vec_dot( ( dcvi[:,0][:, None]*ei +  vec_dot(ei, dcvi)[:, None]*np.array([1,0,0]) ), nt)
+        deiy = vec_dot( ( dcvi[:,1][:, None]*ei +  vec_dot(ei, dcvi)[:, None]*np.array([0,1,0]) ), nt)
+        deiz = vec_dot( ( dcvi[:,2][:, None]*ei +  vec_dot(ei, dcvi)[:, None]*np.array([0,0,1]) ), nt)
+        dejx = vec_dot( ( dcvj[:,0][:, None]*ej +  vec_dot(ej, dcvj)[:, None]*np.array([1,0,0]) ), nt)
+        dejy = vec_dot( ( dcvj[:,1][:, None]*ej +  vec_dot(ej, dcvj)[:, None]*np.array([0,1,0]) ), nt)
+        dejz = vec_dot( ( dcvj[:,2][:, None]*ej +  vec_dot(ej, dcvj)[:, None]*np.array([0,0,1]) ), nt)
+        dekx = vec_dot( ( dcvk[:,0][:, None]*ek +  vec_dot(ek, dcvk)[:, None]*np.array([1,0,0]) ), nt)
+        deky = vec_dot( ( dcvk[:,1][:, None]*ek +  vec_dot(ek, dcvk)[:, None]*np.array([0,1,0]) ), nt)
+        dekz = vec_dot( ( dcvk[:,2][:, None]*ek +  vec_dot(ek, dcvk)[:, None]*np.array([0,0,1]) ), nt)
 
         return deix, deiy, deiz, dejx, dejy, dejz, dekx, deky, dekz
 
@@ -442,16 +442,16 @@ class Torsal(Constraint):
         ncf = self.ncf 
 
         # Compute dot produts
-        eicf = self.vec_dot(ei, ncf)
-        ejcf = self.vec_dot(ej, ncf)
-        ekcf = self.vec_dot(ek, ncf)
+        eicf = vec_dot(ei, ncf)
+        ejcf = vec_dot(ej, ncf)
+        ekcf = vec_dot(ek, ncf)
 
         eicf_ei = eicf[:,None]*ei
         ejcf_ej = ejcf[:,None]*ej
         ekcf_ek = ekcf[:,None]*ek
 
         # Compute the derivative of nt.ec with respect to df
-        d_df = 2/3*self.vec_dot( (eicf_ei + ejcf_ej + ekcf_ek ), nt)
+        d_df = 2/3*vec_dot( (eicf_ei + ejcf_ej + ekcf_ek ), nt)
 
         return d_df, eicf_ei, ejcf_ej, ekcf_ek   
 

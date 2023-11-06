@@ -2,7 +2,8 @@
 import numpy as np
 import time as tm
 import pandas as pd
-from scipy.sparse import csr_matrix, csc_matrix, coo_matrix, linalg
+from scipy.sparse import csc_matrix,diags, vstack
+from scipy.sparse.linalg import splu, spsolve
 
 
 class Optimizer():
@@ -24,6 +25,10 @@ class Optimizer():
         self.J = None # Jacobian matrix
         self.r = None # Residual vector
         self.X = None # Variable
+        self.X0 = None # Initial variable
+        self.bestX = None # Best variable
+        self.bestit = None # Best iteration
+        self.prevdx = None # Previous dx norm
         self.H = None # Hessian matrix
         self.it = None # Iteration 
         self.step = None # Step size
@@ -51,6 +56,7 @@ class Optimizer():
         """
         # Initialize variables
         self.X = X
+        self.X0 = X
         self.it = 0
         self.step = step
         self.method = method
@@ -66,53 +72,55 @@ class Optimizer():
         if constraint.w != 0:
             
             # Compute J, r for the constraint
-            constraint.compute(self.X, *args)
+            constraint._compute(self.X, *args)
 
             # Add J, r to the optimizer
             if self.J is None:
                 self.J =  np.sqrt(constraint.w) * constraint.J
                 self.r =  np.sqrt(constraint.w) * constraint.r
             else:
-                self.J = np.vstack((self.J, np.sqrt(constraint.w) * constraint.J))
+                self.J = vstack((self.J, np.sqrt(constraint.w) * constraint.J))
                 self.r = np.concatenate((self.r, np.sqrt(constraint.w) * constraint.r))
         
 
  
-
     def optimize(self):
         
-
-        if self.method == 'LM': # Levenberg-Marquardt
-            sol = self.LM()
-        elif self.method == 'PG': # Projected Gauss-Newton
-            sol = self.PG()
-        else:
-            print("Error: Solver not implemented or not specified")
-            sol = -1 
-        return sol
+        if self.prevdx is None or self.prevdx > 1e-6:
+            if self.method == 'LM': # Levenberg-Marquardt
+                self.LM()
+            elif self.method == 'PG': # Projected Gauss-Newton
+                self.PG()
+        
 
     def LM(self):
         # Levenberg-Marquardt method for non-linear least squares
         # https://en.wikipedia.org/wiki/Levenberg%E2%80%93Marquardt_algorithm
-        # Solve for (J^TJ + lambda*I) dx = -J^Tr, lambda = max(diag(J^TJ))*1e-6
+        # Solve for (J^TJ + lambda*I) dx = -J^Tr, lambda = max(diag(J^TJ))*1e-8
 
-    
+        # Get J 
+        J = self.J
+
         # Compute pseudo Hessian
-        H = self.J.T@self.J
+        H = (J.T * J).tocsc()
         
-        H[np.diag_indices_from(H)] += np.diag(H).max()*1e-8
+        # Calculate the value to add to the diagonal
+        add_value = H.max() * 1e-8
 
-        # Sparse matrix H
-        H = csc_matrix(H)
-        
-        # Solve for dx
-        dx = linalg.spsolve(H, -self.J.T@self.r)
+        # Create a diagonal matrix with the values to add
+        diagonal_values = np.array([add_value] * H.shape[0])
+        diagonal_matrix = diags(diagonal_values, 0, format='csc')
 
-        # Update r
-        # self.r = self.r + self.J@dx
+        # Add the diagonal_matrix to H
+        H = H + diagonal_matrix
+       
+        b = -J.T@self.r
+
+        dx = spsolve(H, b)
 
         # Compute energy
         energy = self.r.T@self.r
+        
 
         # Append energy
         self.energy.append(energy)
@@ -120,14 +128,32 @@ class Optimizer():
         # Update variables
         self.update_variables(dx)
 
+        # Update previous dx
+        self.prevdx = np.linalg.norm(dx)
+
+        # Update bestX
+        if self.it == 0:
+            self.bestX = self.X
+            self.bestit = self.it
+        else:
+            if energy < self.energy[self.bestit]:
+                self.bestX = self.X
+                self.bestit = self.it
+
+        
         # Update iteration
         self.it +=1
         
         # Print energy
-        print(f" E {self.it}: {energy}")
+        print(f" E {self.it}: {energy} \t {self.prevdx}")
 
         # Clear constraints
         self.clear_constraints()
+
+    def get_variables(self):
+        # Return variables
+        print(f"Best iteration: {self.bestit + 1}\t Best energy: {self.energy[self.bestit]}")
+        return self.bestX
         
     def PG(self):
         # To be implemented
@@ -171,6 +197,18 @@ class Optimizer():
         # Clear Jacobian and residual
         self.J = None
         self.r = None
+
+    def reset(self):
+        """ Function that resets the optimizer to the initial state.
+        """
+
+        self.X = self.X0
+        self.prevdx = None
+        self.energy = []
+        self.it = 0
+        self.bestX = None
+        self.bestit = None
+        self.clear_constraints()
 
 
 

@@ -1,6 +1,6 @@
 import numpy as np
 import polyscope as ps
-from scipy.optimize import minimize, least_squares
+from scipy.optimize import minimize
 
 def unit(v):
     """normalize a list of vectors v
@@ -95,13 +95,13 @@ def orth_proj(v, u):
     """
     return v - proj(v, u)
 
-def vec_dot(v1, v2):
+def vec_dot(v1, v2, ax=1):
     """ Dot product between two lists of vectors v1, v2
     """
     if len(v1.shape) == 1 and len(v2.shape) == 1:
         dot =  v1@v2
     else: 
-        dot = np.sum(v1*v2, axis=1) 
+        dot = np.sum(v1*v2, axis=ax) 
 
     return dot
 
@@ -237,11 +237,11 @@ def torsal_dir_vec(tv, tf, e_i):
 
 # ====================== Polyscope Functions =================
 
-def draw_polygon(vertices, name="_"):
+def draw_polygon(vertices, color, name="_"):
     """
         Register a polygon as a surface
     """
-    ps.register_surface_mesh(name, vertices, [np.arange(len(vertices))[:, None]])
+    ps.register_surface_mesh(name, vertices, [np.arange(len(vertices))[:, None]], color=color, transparency=0.6)
     
 def draw_plane(p0, n, size=(1,1), name="_"):
     """
@@ -251,7 +251,6 @@ def draw_plane(p0, n, size=(1,1), name="_"):
 
     v1 = unit(orth_proj(aux, n))
 
-    print(v1@aux)
     v2 = unit(np.cross(n, v1))
 
     v1 *= size[0]
@@ -259,7 +258,7 @@ def draw_plane(p0, n, size=(1,1), name="_"):
 
     vertices = np.array([p0 + v1 + v2, p0 + v1 - v2, p0 - v1 - v2, p0 - v1 + v2])
 
-    ps.register_surface_mesh(name, vertices, [np.arange(len(vertices))[:, None]], color=(0.1, 0.1, 0.1), transparency=0.2)
+    ps.register_surface_mesh(name, vertices, [np.arange(len(vertices))[:, None]], color=(0.1, 0.1, 0.1), transparency=0.6)
 
 
 def read_obj(filename):
@@ -715,98 +714,24 @@ def normalize_vertices(v, factor=1):
     return normalized_vertices
 
 
-# def initialize_Line_Congruence(v, f, v_f_adj, n, H ):
-#     """ Function to initialize the line congruence. 
-#     Input:
-#         v: vertices
-#         f: faces
-#         v_f_adj: vertex face adjacency
-#         n: normals
-#         faces_top: topology of faces
-#         H: Mean curvature per vertex
-#     """
+def create_hex_face(radius, offset, n=6):
+    """
+        Function to create a hexagon face
+    """
 
-#     # Compute central sphere radius
-#     r = 1/H 
+    # Define the center of the hexagon
+    center = np.array([0, 0, 0])
 
-#     # Per vertex take centers of mean curvature spheres 
-#     mid = v + r[:,None]*n
+    # Calculate the coordinates of the hexagon vertices
+    h_v = np.array([center + radius * np.array([np.cos(2 * np.pi * k / 6), np.sin(2 * np.pi * k / 6), offset + np.random.random()]) for k in range(6)])
 
-#     # Average mean radius per face
-#     r_m = np.mean(1/H[f], axis=1)
+    # Move the center to the average of the vertices
+    center = center +  np.array([0, 0, np.mean(h_v[:,2])])
 
-#     # # Get circumcircles of the faces
-#     # cc, c_r, c_n = circle_3pts(v[f[:,0]], v[f[:,1]], v[f[:,2]])
+    # Include the center as a vertex
+    h_v = np.vstack((center, h_v)) 
 
-#     # # Compute distance from the circumcenter to the center of the sphere
-#     # d = np.sqrt(r_m**2 - c_r**2)
+    # Define the face list with triangle indices
+    h_f = np.vstack((np.array([[i, (i + 1)%7, 0] for i in range(1, 6)]), np.array([6,1,0])))
 
-#     # # # Compute the centers of the spheres
-#     # sph_c = cc + d[:,None]*c_n
-    
-#     # # Compute the average of the sphere centers per face
-#     # sph_n = np.zeros((len(v),3))    
-#     # sph_mid = np.zeros((len(v),3))
-#     # for i in range(len(v)):
-#     #     sphi = sph_c[v_f_adj[i]]
-#     #     sphj = sph_c[np.roll(v_f_adj[i], -1)]
-
-
-#     #     sph_mid[i] = np.mean(sph_c[v_f_adj[i]], axis=0)
-
-#     #     sph_n[i] = unit(np.mean( np.cross( unit(sphj - sph_mid[i]), unit(sphi - sph_mid[i])), axis=0))
-
-#     # sph_m_normals = np.zeros((len(v),3))
-#     # for i in range(len(v)):
-#     #     sphi = sph_c[v_f_adj[i]]
-#     #     sphj = sph_c[np.roll(v_f_adj[i], -1)]
-
-#     #     if np.linalg.norm(np.mean(np.cross(sphi - sph_m[i], sphj - sph_m[i]),axis=0)) > 1e-7:
-#     #         sph_m_normals[i] = unit(np.mean(np.cross( unit(sphi - sph_m[i]), unit(sphj - sph_m[i])),axis=0))
-#     #     else:
-#     #         print(f"normal {v}: {unit(np.cross( sphi[0] - sph_m[i], sphj[0] - sph_m[i]))}")
-#     #         sph_m_normals[i] = unit(np.cross( sphi[0] - sph_m[i], sphj[0] - sph_m[i]))
-
-   
-#     # # Compute the normals of midpoint triangles
-#     n_mid = unit(np.cross(mid[f[:,1]] - mid[f[:,0]], mid[f[:,2]] - mid[f[:,0]]))
-
-#     av_n = np.zeros_like(v)
-
-#     print("Redoo the computation of the edge directions by using actual sphere centers")
-  
-#     # Compute the edge directions by averaging the normals of neighboring faces per vertex
-#     for i in range(len(v)):
-#         if len(v_f_adj[i]) <= 3:
-#             av_n[i] = n[i]
-#         else:
-#             av_n[i] = unit(np.sum(n_mid[v_f_adj[i]], axis=0))
-
-#     print(f"av_n : {av_n}")
-
-#     # Face mid 
-    
-    
-#     # Reflect v with respect e_i 
-#     v_ref = mid + (v-mid) - 2*proj((v- mid), av_n)
-
-#     #print(f"v_ref : {v_ref}")
-
-#     # Compute the e  
-#     e = v_ref - v 
-
-#     return e, mid, np.mean(mid[f], axis=1), r_m
-
-
-
-
-    
-
-    
-
-
-
-
-
-
-
+    return h_v, h_f

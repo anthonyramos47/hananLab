@@ -2,9 +2,10 @@
 import numpy as np
 import time as tm
 import pandas as pd
-from hanan.optimization.Unit import Unit
-from scipy.sparse import csc_matrix,diags, vstack
-from scipy.sparse.linalg import splu, spsolve
+from optimization.Unit import Unit
+from geometry.utils import unit
+from scipy.sparse import diags, vstack
+from scipy.sparse.linalg import spsolve
 import matplotlib.pyplot as plt
 
 
@@ -27,6 +28,7 @@ class Optimizer():
         self.J = None # Jacobian matrix
         self.r = None # Residual vector
         self.X = None # Variable
+        self.X0 = None # Initial variable 
         self.bestX = None # Best variable
         self.bestit = None # Best iteration
         self.prevdx = None # Previous dx
@@ -40,6 +42,59 @@ class Optimizer():
         self.var = 0 # Number of variables
         self.constraints = [] # List of constraints objects
         self.verbose = False # Verbose
+
+    def clear_energy(self):
+        """
+        Method to clear the energy
+        """
+        self.energy = []
+        self.bestit = None
+        self.bestX = None
+
+    def clear_constraints(self):
+        """
+        Method to clear the constraints
+        """
+        self.constraints = []
+
+    def reset_it_optimizer(self):
+        """
+        Method to reset the optimizer
+        """
+        self.clear_energy()
+        self.clear_constraints()
+        #self.X = self.X0.copy()
+        self.prevdx = None
+        self.it = 0
+        self.bestX = None
+        self.bestit = None
+    
+
+    def report_energy(self, name="Final_Energy_plot"):
+        # Save energy per constraint to a file
+        with open(name+"_energy_per_constraint.data", "w") as file:
+            file.write(f"ENERGY REPORT\n")
+            file.write("===========================================\n")
+            for en_name, energy in self.energy_dic.items():
+                file.write(f"{en_name}: {energy}\n")
+            file.write("===========================================\n")
+            file.write("=============Final Energy ==================\n")
+
+            file.write(f"Final Energy: {self.energy[-1]}\n")
+            file.write(f"Best iteration: {self.bestit + 1}\nBest energy: {self.energy[self.bestit]}")
+
+
+
+        print(f"Final Energy: {self.energy[-1]}")
+        plot = plt.plot(self.energy)
+        plt.xlabel('Iteration')
+        plt.ylabel('Energy')
+        plt.title('Energy per iteration')
+        plt.xlim(0, len(self.energy))
+        plt.grid()
+        # Put point markers on the plot
+        plt.scatter(range(len(self.energy)), self.energy, color='r')
+        plt.savefig(name)
     
     def get_energy_per_constraint(self):
         print(f"ENERGY REPORT\n")
@@ -49,7 +104,7 @@ class Optimizer():
         print("===========================================\n")
         print("=============Final Energy ==================\n")
         print(f"Final Energy: {self.energy[-1]}\n")
-        print(f"Best iteration: {self.bestit + 1}\nBest energy: {self.energy[self.bestit]}")
+        print(f"Best iteration: {self.bestit + 1}\nBest energy: {self.energy[self.bestit]}\n\n")
 
     def add_variable(self, var_name, dim) -> None:
         """
@@ -61,7 +116,24 @@ class Optimizer():
         self.var_idx[var_name] = np.arange(self.var, self.var + dim)
         self.var += dim
 
-            
+    def init_variables(self, X) -> None:
+        """
+            Method to set the variables of the optimizer
+            Input:
+                X: Variables
+        """
+        self.X = X
+        self.X0 = X.copy()
+
+    def init_variable(self, name, vals):
+        """
+            Method to set the value of a variable
+            Input:
+                name: Name of the variable
+                vals: Value of the variable
+        """
+        self.X[self.var_idx[name]] = vals
+        self.X0[self.var_idx[name]] = vals
 
     def add_constraint(self, constraint, args, w=1) -> None:
         """
@@ -79,30 +151,6 @@ class Optimizer():
         self.constraints.append(constraint)
 
 
-    def report_energy(self, name="Final_Energy_plot"):
-        # Save energy per constraint to a file
-        with open(name+"_energy_per_constraint.data", "w") as file:
-            file.write(f"ENERGY REPORT\n")
-            file.write("===========================================\n")
-            for en_name, energy in self.energy_dic.items():
-                file.write(f"{en_name}: {energy}\n")
-            file.write("===========================================\n")
-            file.write("=============Final Energy ==================\n")
-
-            file.write(f"Final Energy: {self.energy[-1]}\n")
-            file.write(f"Best iteration: {self.bestit + 1}\nBest energy: {self.energy[self.bestit]}")
-
-
-        print(f"Final Energy: {self.energy[-1]}")
-        plot = plt.plot(self.energy)
-        plt.xlabel('Iteration')
-        plt.ylabel('Energy')
-        plt.title('Energy per iteration')
-        plt.xlim(0, len(self.energy))
-        plt.grid()
-        # Put point markers on the plot
-        plt.scatter(range(len(self.energy)), self.energy, color='r')
-        plt.savefig(name)
 
     def unitize_variable(self, var_name, dim) -> None:
         """
@@ -117,7 +165,7 @@ class Optimizer():
         #unit.initialize_constraint(self.X, self.var_idx, var_name, dim)
         unit._initialize_constraint(self.X, self.var_idx, var_name, dim)
         unit.name = var_name + "_unit"
-        self.energy_vector = np.zeros(len(self.X))
+        #self.energy_vector = np.zeros(len(self.X))
         self.constraints.append(unit)
         # Add constraint
         #self.get_gradients(unit)
@@ -157,29 +205,36 @@ class Optimizer():
         """
         stacked_J = []
         stacked_r = []
-        for constraint in self.constraints:
 
+        total = 0
+        for constraint in self.constraints:
+            
             # Add J, r to the optimizer
             if constraint.w != 0:
-
+                
+                #initial_time = tm.time()
                 # Compute J, r for the constraint
                 constraint._compute(self.X, self.var_idx)
+                final_time = tm.time()
+                #total += final_time - initial_time
+                #print(f"Time to compute {constraint.name}: {final_time - initial_time}")
 
                 # Add J, r to the optimizer                
-                stacked_J.append(np.sqrt(constraint.w) * constraint.J)
-                stacked_r.append(np.sqrt(constraint.w) * constraint.r)          
+                stacked_J.append(np.sqrt(constraint.w) * constraint._J)
+                stacked_r.append(np.sqrt(constraint.w) * constraint._r)          
 
                 # Add energy to the energy dictionary
                 if constraint.name is not None:
-                        self.energy_dic[constraint.name] = constraint.w * np.sum(constraint.r**2)
-
+                        self.energy_dic[constraint.name] = constraint.w * np.sum(constraint._r**2)
+        #print(f"\nTotal time to compute constraints: {total}")
         
         if len(stacked_J) == 1:
             self.J = stacked_J[0]
             self.r = stacked_r[0]
         else:
-            self.J = np.vstack(stacked_J)
-            self.r = np.vstack(stacked_r)
+            
+            self.J = vstack(stacked_J)
+            self.r = np.hstack(stacked_r)
 
 
  
@@ -315,4 +370,12 @@ class Optimizer():
         self.clear_constraints()
 
 
+    def force_unit_variable(self, v_name, dim):
+        """ Function that forces the variables to be unit vectors.
+            Input:
+                v_name: Name of the variable
+                dim: Dimension of the variable
+        """
+
+        self.X[self.var_idx[v_name]] = unit(self.X[self.var_idx[v_name]].reshape(-1, dim)).flatten()
 

@@ -1,6 +1,7 @@
 # Creation of the constraint class
 # This is meant to be a template to compute constraints
 # The main idea is to pass a mesh and return a residual and a Jacobian
+from math import pi
 import numpy as np
 import hanan.geometry as geo
 from scipy.sparse import csc_matrix
@@ -16,7 +17,7 @@ class Constraint():
         self.j = [] # Column index
         self.values = [] # Values
         self.r = None # Residual vector
-        self.const = None # Num Constraints
+        self.const = 0 # Num Constraints
         self.var = None # Num Variables
         self.const_idx = {} # Dic to store the index of the constraints
 
@@ -143,9 +144,11 @@ class Constraint():
         """
         self.i = []
         self.j = []
+      
         self.values = [] 
         self.J = None
         self.r = np.zeros(self.const, dtype=np.float64)
+
 
 
 

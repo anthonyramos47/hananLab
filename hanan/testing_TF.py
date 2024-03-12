@@ -217,6 +217,8 @@ nIE = len(inner_edges)
 
 #  Optimizer
 optimizer = Optimizer()
+
+
 # Define the variables
 optimizer.add_variable("e", 3*nV)
 optimizer.add_variable("sph_c", 3*nF)

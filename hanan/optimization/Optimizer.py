@@ -115,7 +115,7 @@ class Optimizer():
         # Initialize constraint
         unit = Unit()
         #unit.initialize_constraint(self.X, self.var_idx, var_name, dim)
-        unit.initialize_constraint(self.X, self.var_idx, var_name, dim)
+        unit._initialize_constraint(self.X, self.var_idx, var_name, dim)
         unit.name = var_name + "_unit"
         self.energy_vector = np.zeros(len(self.X))
         self.constraints.append(unit)
@@ -136,13 +136,13 @@ class Optimizer():
         pass
 
 
-    def initialize_optimizer(self, X, method= "LM", step = 0.8, print=0) -> None:
+    def initialize_optimizer(self, method= "LM", step = 0.8, print=0) -> None:
         """
         Initialize the optimizer( variables, step size)
         """
         # Initialize variables
-        self.X = X
-        self.X0 = X.copy()
+        self.X = np.zeros(self.var)
+        self.X0 = np.zeros(self.var)
         self.it = 0
         self.step = step
         self.method = method

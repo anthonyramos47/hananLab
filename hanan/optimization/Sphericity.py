@@ -41,6 +41,8 @@ class Sphericity(Constraint):
         # Set vertices
         self.v = V
 
+        
+
 
     def compute(self, X, var_idx) -> None:
         """ Compute the residual and the Jacobian of the constraint

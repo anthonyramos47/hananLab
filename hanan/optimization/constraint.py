@@ -69,7 +69,10 @@ class Constraint():
         # print("shape j:", len(self._j))
         # print("shape values:", len(self._values))
 
-        in_t = time()
+        
+        assert len(self._i) == len(self._j) == len(self._values), f"The Jacobian is not well defined: Shapes: i:{len(self._i)}, j:{len(self._j)}, values:{len(self._values)}"
+
+        
         if self.sparse:
             self._J = csc_matrix((np.array(self._values), (self._i, self._j)), shape=(self.const, self.var))
         else:

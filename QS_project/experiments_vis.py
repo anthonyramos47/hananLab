@@ -48,7 +48,12 @@ def main():
     """
     # Load the data
     data = load_data()
-    
+
+                    
+    bsp = data['surf'] # BSpline surface
+    u_vals = data['u_pts'] # U values
+    v_vals = data['v_pts'] # V values
+    r_uv = data['r_uv'] # r_uv
     V = data['V'] # Vertices
     F = data['F'] # Faces
     l = data['l'] # Line congruence 
@@ -102,12 +107,16 @@ def main():
    
     planarity_opt = 0.5*(planarity_check(t1, lt1, lc) + planarity_check(t2, lt2, lc))
 
+    anal_l = line_congruence_uv(bsp, r_uv, u_vals, v_vals).reshape(-1, 3)
+
     ps.init()
     
     surf = ps.register_surface_mesh("Surface", V, F)
 
     # OPTIMIZED LC
     surf.add_vector_quantity("l", l.reshape(-1, 3), defined_on="vertices", vectortype='ambient',  enabled=True, color=(0.1, 0.0, 0.0))
+
+    surf.add_vector_quantity("A l", anal_l, defined_on="vertices", vectortype='ambient',  enabled=True, color=(0.0, 0.1, 0.0))
 
     surf.add_scalar_quantity("r_uv", r_uv_surf.flatten(), defined_on="vertices", enabled=True)
 

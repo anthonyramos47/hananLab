@@ -238,6 +238,39 @@ def offset_spheres(bsp, u_vals, v_vals, offset):
 
     return c, r
 
+
+def sphere_congruence_der_pt(bsp, r_uv, u0, v0):
+    """
+    Function to compute the derivatives of the central spheres with respect to u and v
+    Input:
+        bsp: Bspline surface S(u,v): R^2 -> R^3
+        ruv: (t: knots, c: control points; k: degrees) Bspline surface of the radius r(u,v): R^2 -> R 
+        u0: u value
+        v0: v value
+    """
+
+    # Compute the derivatives of the surface s(u,v)
+    su = bsp.derivative(u0, v0, d=(1, 0))
+    sv = bsp.derivative(u0, v0, d=(0, 1))
+
+    n = bsp.normal(u0, v0)
+
+    # Compute the derivatives of the Gauss map
+    nu, nv = normal_derivatives_uv(bsp, u_vals, v_vals)
+    
+    # Compute the radius function r(u,v) at grid points
+    r = bisplev(u_vals, v_vals, r_uv)
+
+    # Compute the derivatives of the radius
+    ru = bisplev(u_vals, v_vals, r_uv, dx=1, dy=0)
+    rv = bisplev(u_vals, v_vals, r_uv, dx=0, dy=1)
+
+    # Compute the derivatives of the center
+    cu = su + ru[:,:,None]*n + r[:,:,None]*nu
+    cv = sv + rv[:,:,None]*n + r[:,:,None]*nv
+
+    return cu, cv
+
 def sphere_congruence_derivatives(bsp, r_uv, u_vals, v_vals):
     """
     Function to compute the derivatives of the central spheres with respect to u and v
@@ -337,6 +370,39 @@ def sph_ln_cong_at_pt(bsp, r_uv, ui, vj):
     l = l*np.sign(l@n)
 
     return c, l 
+
+def normal_der_pt(bsp, u0, v0):
+    """
+    Function tha compute the derivatives of the normal vector in the u and v directions
+    Input:
+        bsp: Bspline surface S(u,v): R^2 -> R^3
+        u_vals: u values np.array(sample X 3)
+        v_vals: v values np.array(sample X 3)
+    """
+
+    # Compute the derivatives of the surface s(u,v)
+    su =  bsp.derivative(u0, v0, d=(1, 0))
+    sv =  bsp.derivative(u0, v0, d=(0, 1))
+
+    suu = bsp.derivative(u0, v0, d=(2, 0))
+    svv = bsp.derivative(u0, v0, d=(0, 2))
+    suv = bsp.derivative(u0, v0, d=(1, 1))
+
+    # Compute the normal
+    n = np.cross(su, sv)
+    n_norm = np.linalg.norm(n)
+
+    # Compute the derivatives of the normal
+    # nu = f1/n_norm + f2/n_norm - n*(f1 + f2)@n)/n_norm**3
+    suu_sv = np.cross(suu, sv)
+    su_suv = np.cross(su, suv)
+    suv_sv = np.cross(suv, sv)
+    su_svv = np.cross(su, svv)
+
+    nu = suu_sv/n_norm + su_suv/n_norm - n*((suu_sv + su_suv)@n)/n_norm**3
+    nv = suv_sv/n_norm + su_svv/n_norm - n*((suv_sv + su_svv)@n)/n_norm**3
+
+    return nu, nv
 
 def normal_derivatives_uv(bsp, u_vals, v_vals):
     """

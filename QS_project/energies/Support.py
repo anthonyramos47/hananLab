@@ -2,6 +2,7 @@
 from optimization.constraint import Constraint
 import splipy as sp
 import numpy as np
+from geometry.utils import indices_flatten_dim
 
 
 class Supp(Constraint):
@@ -15,10 +16,10 @@ class Supp(Constraint):
         self.name = "Support" # Name of the constraint
         self.sph_sph_adj = None # Faces list
         self.edge_indices = None # Edges indices per face
-        self.cij_norm = None # Norm of the vector c_{i+1} - c_i
+
 
       
-    def initialize_constraint(self, X, var_idx, sph_sph_adj, aux) -> None:
+    def initialize_constraint(self, X, var_idx, sph_sph_adj, inn_v) -> None:
         """ 
         We assume knots are normalized
         Input:
@@ -30,9 +31,6 @@ class Supp(Constraint):
             v_sample  : V sample points
         """
 
-        # Get centers of spheres
-        c = self.uncurry_X(X, var_idx, "c")
-        c = c.reshape(-1, 3)
 
         # Define u_points and v_points
         self.sph_sph_adj = sph_sph_adj
@@ -48,22 +46,17 @@ class Supp(Constraint):
                 const += spheres_number
 
             
+        self.nd_idx = var_idx["nd"][indices_flatten_dim(inn_v, n=3)]
         # Define length of the edges
-        self.cij_norm = []
+        
         for f_i in sph_sph_adj:
             spheres_number = len(f_i)
-
             if spheres_number < 3:
                 print(f_i)
             else:
                 edges_face = []
-
-                cij_norm_f = []
-                for i in range(spheres_number):
-                    cij_norm_f.append(np.linalg.norm(c[f_i[(i+1)%spheres_number]] - c[f_i[i]]))
+                for i in range(spheres_number):                    
                     edges_face.append((f_i[i], f_i[(i+1)%spheres_number]))
-
-                self.cij_norm.append(np.array(cij_norm_f))
                 self.edge_indices.append(np.array(edges_face))
 
         self.add_constraint("supp", const)
@@ -78,66 +71,74 @@ class Supp(Constraint):
         """ 
 
         # Get centers of spheres
-        c, nd = self.uncurry_X(X, var_idx, "c", "nd")
-        c = c.reshape(-1, 3)
+        A, B= self.uncurry_X(X, var_idx, "A", "B")
+        nd = X[self.nd_idx]
+        B = B.reshape(-1, 3)
         nd = nd.reshape(-1, 3)
 
         #rows = [np.hstack((np.arange(self.const).repeat(6), np.arange(self.const).repeat(3) ))]
-        cols_ci = []
-        cols_cj = []
+        cols_A1 = []
+        cols_A2 = []
+        cols_B1 = []
+        cols_B2 = []
         cols_nd = []
-        values_ci = []
-        values_cj = []
+        values_A1 = []
+        values_A2 = []
+        values_B1 = []
+        values_B2 = []
         values_nd = []
 
         res = []
         # Loop over faces
-        for i, f_i in enumerate(self.sph_sph_adj):
+        for i, _ in enumerate(self.sph_sph_adj):
             edges = self.edge_indices[i]
 
-            #print(np.linalg.norm((c[edges[:, 1]] - c[edges[:, 0]])/self.cij_norm[i][:, None]))
+            B1 = B[edges[:, 0]]
+            B2 = B[edges[:, 1]]
 
-            # Dot porduct of the normal and the edges
-            #cij_nd = np.einsum('ij, ij->i', c[edges[:, 1]] - c[edges[:, 0]], nd[None, i])
-            cij_nd = np.sum((c[edges[:, 1]] - c[edges[:, 0]])*nd[i], axis=1)
-            cij_nd /= self.cij_norm[i]
+            A1 = A[edges[:, 0]]
+            A2 = A[edges[:, 1]]
 
-            # Get edges index
+            # Get edges index for 3 dim case
             edges_idx_i = 3 * np.repeat(edges[:,0], 3) + np.tile(range(3), len(edges[:,0]))
             edges_idx_j = 3 * np.repeat(edges[:,1], 3) + np.tile(range(3), len(edges[:,1]))
 
-            # Edges indices
-            edg_idx_i = var_idx["c"][edges_idx_i]
-            edg_idx_j = var_idx["c"][edges_idx_j]
+            # Edges indices for A and B
+            A_idx_1 = var_idx["A"][edges[:,0]]
+            A_idx_2 = var_idx["A"][edges[:,1]]
 
-            # Constraint
-            cols_ci.extend(edg_idx_i)
-            cols_cj.extend(edg_idx_j)
+            B_idx_1 = var_idx["B"][edges_idx_i]
+            B_idx_2 = var_idx["B"][edges_idx_j]
 
-            nd_cjnorm = np.array([nd[i]]).repeat(len(edges), axis=0)/self.cij_norm[i][:,None]
-            # d_c(i+1) E_supp_f = nd
-            d_cj_E_f  =   nd_cjnorm 
-            # d_c(i) E_supp_f = - nd
-            d_ci_E_f  =  -nd_cjnorm
-
-            # Values extend
-            values_ci.extend(d_ci_E_f.flatten()) 
-            values_cj.extend(d_cj_E_f.flatten())
             
-            # DN E_supp_f
-            # d_n E_supp_f = (c_{i+1} - c_i)/||c_{i+1} - c_i||
-            d_n_E_f = (c[edges[:, 1]] - c[edges[:, 0]])/self.cij_norm[i][:, None]
+            # E = (A1 B2 - A2 B1) nd
+            # dA1 = B2 nd
+            cols_A1.extend(A_idx_1)
+            values_A1.extend(np.sum(B2*nd[i], axis=1))
+            # dA2 = -B1 nd
+            cols_A2.extend(A_idx_2)
+            values_A2.extend(-np.sum(B1*nd[i], axis=1))
+            # dB1 = - A2 nd
+            cols_B1.extend(B_idx_1)
+            
+            ext_nd = np.array([nd[i]]).repeat(len(edges), axis=0)
+            values_B1.extend((-A2[:,None]*ext_nd).flatten())
+            # dB2 = A1 nd
+            cols_B2.extend(B_idx_2)
+            values_B2.extend( (A1[:,None]*ext_nd).flatten()) 
 
-            values_nd.extend(d_n_E_f.flatten())
-
-            cols_nd.extend( var_idx["nd"][3*i: 3*i+3].repeat(len(edges), axis=0) )
+            # d_nd = (A1 B2 - A2 B1)
+            d_nd = A1[:, None]*B2 - A2[:, None]*B1
+            cols_nd.extend(np.tile(var_idx["nd"][3*i:3*(i+1)], len(edges)))
+            values_nd.extend(d_nd.flatten())
             
             # Residual
-            res.extend(cij_nd)
-            self.cij_norm[i] = np.linalg.norm(c[edges[:, 1]] - c[edges[:, 0]], axis=1)
+            res.extend( np.sum(d_nd*nd[i], axis=1) )
 
-        self.add_derivatives(np.arange(self.const).repeat(3), cols_ci, values_ci)
-        self.add_derivatives(np.arange(self.const).repeat(3), cols_cj, values_cj)
+        self.add_derivatives(np.arange(self.const), cols_A1, values_A1)
+        self.add_derivatives(np.arange(self.const), cols_A2, values_A2)
+        self.add_derivatives(np.arange(self.const).repeat(3), cols_B1, values_B1)
+        self.add_derivatives(np.arange(self.const).repeat(3), cols_B2, values_B2)
         self.add_derivatives(np.arange(self.const).repeat(3), cols_nd, values_nd)
         self.set_r(self.const_idx["supp"], res)
 

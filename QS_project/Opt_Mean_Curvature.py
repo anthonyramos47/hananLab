@@ -70,9 +70,11 @@ sample = 50
 control_points, knots_u, knots_v, order_u, order_v = read_bspline_json(bspline_surf_path)
 
 
+
 # Create the B-splines basis
 basis_u = sp.BSplineBasis(order_u, knots_u) 
 basis_v = sp.BSplineBasis(order_v, knots_v) 
+
 
 # Create the B-spline surface
 bsp1 = sp.Surface(basis_u, basis_v, control_points)
@@ -93,6 +95,12 @@ num_neg = len(np.where(H < 0)[0])
 
 cp_flat = control_points.flatten()
 
+# epsilon 
+epsilon = 1/(0.5*np.linalg.norm([np.min(cp_flat, axis=0), np.max(cp_flat, axis=0)]))
+
+print("Epsilon: ", epsilon)
+print("Radius/2: ", 0.5*np.linalg.norm([np.min(cp_flat, axis=0), np.max(cp_flat, axis=0)]))
+
 original_cp_flat = cp_flat.copy()
 
 
@@ -103,26 +111,31 @@ x0 = np.hstack((cp_flat, dummy))
 if num_pos > num_neg:
 
     def objective_function(cp_flat, original_cp_flat, weight):
-        size = len(original_cp_flat)
-         # Objective function to minimize
+        cp_pts = cp_flat[:len(original_cp_flat)]
+        # Objective function to minimize
+        
+
         # For example, weighted distance from the original control points
-        return weight * np.sum((cp_flat[:size] - original_cp_flat) ** 2)
+        return weight * np.sum((cp_pts - original_cp_flat) ** 2)
 
     
     def constraint_function(cp_flat):
-        size = len(original_cp_flat)
+        #size = len(original_cp_flat)
+        cp_pts = cp_flat[:len(original_cp_flat)]
+        dummy  = cp_flat[len(original_cp_flat):]
 
         # Reconstruct the control points from the flattened array
-        control_points_reshaped = cp_flat[:size].reshape(control_points.shape)
+        control_points_reshaped = cp_pts.reshape(control_points.shape)
 
         # Recreate the B-spline surface with the new control points
         bsp1_new = sp.Surface(basis_u, basis_v, control_points_reshaped)
         
         # Compute the curvature with the new control points
         _, H, _ = curvatures_par(bsp1_new, u_vals, v_vals)
+
         
         # Ensure H is positive
-        return (H.flatten() - cp_flat[size:]**2 - 0.2) # Subtract a small value to ensure positivity
+        return (H.flatten() - dummy**2 - epsilon) # Subtract a small value to ensure positivity
 
     # Define the constraint in the form expected by scipy.optimize.minimize
     constraints = {'type': 'ineq', 
@@ -162,7 +175,7 @@ else:
         _, H, _ = curvatures_par(bsp1_new, u_vals, v_vals)
         
         # Ensure H is positive
-        return (-H.flatten() - cp_flat[size:]**2 - 0.2) # Subtract a small value to ensure positivity
+        return (-H.flatten() - cp_flat[size:]**2 - epsilon) # Subtract a small value to ensure positivity
 
     # Define the constraint in the form expected by scipy.optimize.minimize
     constraints = {'type': 'ineq', 
@@ -187,10 +200,7 @@ else:
 # Create the B-spline surface
 bsp1 = sp.Surface(basis_u, basis_v, optimized_control_points)
 
-# Evaluate the B-spline surface
-#eval_surf = bsp1(u_vals, v_vals)
-
-
+# Evaluate the B-spline surface at the u and v points
 delta_u_m = 0.05 
 delta_u_M = 0.05  
 delta_v_m = 0.05
@@ -200,28 +210,31 @@ delta_v_M = 0.05
 def curvature_sel():
     global bsp1, sample, delta_u_m, delta_u_M, delta_v_m, delta_v_M, u_vals, v_vals, surf
 
-    _, delta_u_m = psim.SliderFloat("deltaumin", delta_u_m, 0.01, 1)
-    _, delta_u_M = psim.SliderFloat("deltaumax", delta_u_M, 0.01, 1)
-    _, delta_v_m = psim.SliderFloat("deltavmin", delta_v_m, 0.01, 1)
-    _, delta_v_M = psim.SliderFloat("deltavmax", delta_v_M, 0.01, 1)
-
-    
+    _, delta_u_m = psim.SliderFloat("deltaumin", delta_u_m, 0.05, 1)
+    _, delta_u_M = psim.SliderFloat("deltaumax", delta_u_M, 0.05, 1)
+    _, delta_v_m = psim.SliderFloat("deltavmin", delta_v_m, 0.05, 1)
+    _, delta_v_M = psim.SliderFloat("deltavmax", delta_v_M, 0.05, 1)
+  
 
     if psim.Button("Draw Surface"):
         # Sample the grid points to evaluate the B-spline surface
         u_vals, v_vals = sample_grid(sample, sample, deltaum=delta_u_m, deltauM=delta_u_M, deltavm = delta_v_m, deltavM = delta_v_M)
-       
 
+        # Evaluate the B-spline surface at the u and v points
         V,F =Bspline_to_mesh(bsp1, u_vals, v_vals)
+
+        # Create the surface mesh
         surf = ps.register_surface_mesh("mesh", V, F)
 
         # Compute the curvature
         K, H, _ = curvatures_par(bsp1, u_vals, v_vals)
 
+        # Flatten the curvature values
         H = H.flatten()
         K = K.flatten()
         valid = np.zeros_like(H)
 
+        # Define number of positive and negative values
         idx = np.where(H < 0)[0]
 
         valid[idx] = 1
@@ -230,7 +243,6 @@ def curvature_sel():
         surf.add_scalar_quantity("Gaussian Curvature", K, enabled=False)
         surf.add_scalar_quantity("Near Vanishing Curv", valid, enabled=True)
 
-    
 
     if psim.Button("Save"):
          # Variable to save
@@ -245,8 +257,6 @@ def curvature_sel():
             pickle.dump(save_data, file)
 
         ps.warning("Results saved in: " + save_file_path)
-
-
 
 ps.init()
 
